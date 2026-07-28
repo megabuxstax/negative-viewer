@@ -40,6 +40,9 @@ input[type=range]{width:100%;accent-color:var(--accent)}
 output{font-size:12px;color:var(--muted);font-variant-numeric:tabular-nums;text-align:right}
 .actions{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:14px}
 .note{margin:12px 2px 0;color:var(--muted);font-size:12px;line-height:1.45}
+footer{margin:4px 12px 10px;padding:12px 4px;text-align:center;color:var(--muted);font-size:12px}
+footer a{color:var(--accent);text-decoration:none}
+footer a:focus,footer a:hover{text-decoration:underline}
 @media(min-width:720px){.toolbar{grid-template-columns:1.25fr repeat(3,1fr)}.layout{display:grid;grid-template-columns:minmax(0,1.55fr) minmax(300px,.7fr);align-items:start}.viewer{min-height:610px;position:sticky;top:12px}}
 </style>
 </head>
@@ -81,6 +84,7 @@ output{font-size:12px;color:var(--muted);font-variant-numeric:tabular-nums;text-
 </section>
 </div>
 </div>
+<footer><a href="privacy.html">Privacy Policy</a></footer>
 
 <script>
 (function(){
