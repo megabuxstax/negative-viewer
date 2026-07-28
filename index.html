@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#111214">
-<title>Negative Film Viewer v4</title>
+<title>Negative Film Viewer v5</title>
 <style>
 :root{color-scheme:dark;--bg:#111214;--panel:#1b1d21;--panel2:#25282e;--text:#f4f4f2;--muted:#a7acb4;--line:#363a42;--accent:#f0c36c}
 *{box-sizing:border-box}
@@ -23,10 +23,14 @@ button:disabled{opacity:.38}
 .fileButton input{position:absolute;inset:0;width:100%;height:100%;opacity:0;cursor:pointer;font-size:16px}
 .layout{display:block}
 .viewer{position:relative;min-height:330px;margin:0 12px 12px;border:1px solid var(--line);border-radius:18px;overflow:hidden;background:#15171a;display:grid;place-items:center}
+.canvasWrap{position:relative;display:inline-block;line-height:0;max-width:100%;max-height:70vh}
 canvas{display:block;max-width:100%;max-height:70vh;width:auto;height:auto;touch-action:manipulation}
+#cropCanvas{position:absolute;inset:0;z-index:2;display:none;touch-action:none}
 .empty{padding:38px 22px;text-align:center;color:var(--muted)}
 .empty strong{display:block;color:var(--text);font-size:18px;margin-bottom:7px}
-.pickHint{position:absolute;top:12px;left:50%;transform:translateX(-50%);background:rgba(0,0,0,.8);padding:9px 12px;border-radius:999px;font-size:13px;white-space:nowrap;pointer-events:none}
+.pickHint,.cropHint{position:absolute;left:50%;transform:translateX(-50%);background:rgba(0,0,0,.8);padding:9px 12px;border-radius:999px;font-size:13px;white-space:nowrap;pointer-events:none;z-index:3}
+.pickHint{top:12px}
+.cropHint{bottom:12px}
 .hidden{display:none!important}
 .panel{margin:0 12px 12px;background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:14px}
 .panelHead{display:flex;justify-content:space-between;gap:10px;align-items:center;margin-bottom:10px}
@@ -38,7 +42,8 @@ select{width:100%;font-weight:600}
 .control label{font-size:13px;color:#d8dade}
 input[type=range]{width:100%;accent-color:var(--accent)}
 output{font-size:12px;color:var(--muted);font-variant-numeric:tabular-nums;text-align:right}
-.actions{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:14px}
+.actions{display:grid;grid-template-columns:repeat(2,1fr);gap:8px;margin-top:14px}
+.cropActions{display:grid;grid-template-columns:repeat(2,1fr);gap:8px;margin-top:8px}
 .note{margin:12px 2px 0;color:var(--muted);font-size:12px;line-height:1.45}
 footer{margin:4px 12px 10px;padding:12px 4px;text-align:center;color:var(--muted);font-size:12px}
 footer a{color:var(--accent);text-decoration:none}
@@ -63,8 +68,12 @@ footer a:focus,footer a:hover{text-decoration:underline}
 <div class="layout">
 <div class="viewer" id="viewer">
 <div class="empty" id="empty"><strong>No negative loaded</strong>Choose a photo from the camera roll. Screenshots are the most compatible.</div>
-<canvas id="canvas" class="hidden"></canvas>
+<div class="canvasWrap hidden" id="canvasWrap">
+<canvas id="canvas"></canvas>
+<canvas id="cropCanvas"></canvas>
+</div>
 <div class="pickHint hidden" id="pickHint">Tap a clear film border</div>
+<div class="cropHint hidden" id="cropHint">Drag to select a crop area</div>
 </div>
 
 <section class="panel">
@@ -79,7 +88,18 @@ footer a:focus,footer a:hover{text-decoration:underline}
 <div class="control"><label for="temperature">Warmth</label><input id="temperature" type="range" min="-100" max="100" step="1" value="0"><output id="temperatureOut">0</output></div>
 <div class="control"><label for="tint">Tint</label><input id="tint" type="range" min="-100" max="100" step="1" value="0"><output id="tintOut">0</output></div>
 <div class="control"><label for="saturation">Saturation</label><input id="saturation" type="range" min="0" max="2" step="0.01" value="1"><output id="saturationOut">1.00</output></div>
-<div class="actions"><button type="button" id="rotateBtn" disabled>Rotate</button><button type="button" id="resetBtn" disabled>Reset</button><button type="button" id="saveBtn" disabled>Save image</button></div>
+<div class="actions">
+<button type="button" id="flipHBtn" disabled>Flip horizontal</button>
+<button type="button" id="flipVBtn" disabled>Flip vertical</button>
+<button type="button" id="rotateBtn" disabled>Rotate</button>
+<button type="button" id="cropBtn" disabled>Crop</button>
+<button type="button" id="resetBtn" disabled>Reset</button>
+<button type="button" id="saveBtn" disabled>Save image</button>
+</div>
+<div class="cropActions hidden" id="cropActions">
+<button type="button" id="applyCropBtn" disabled>Apply crop</button>
+<button type="button" id="cancelCropBtn" disabled>Cancel crop</button>
+</div>
 <p class="note">The conversion is a preview rather than a calibrated scan. Film stock, backlight, camera exposure, and white balance affect the result.</p>
 </section>
 </div>
@@ -93,12 +113,16 @@ var byId=function(id){return document.getElementById(id);};
 var fileInput=byId('fileInput');
 var canvas=byId('canvas');
 var ctx=canvas.getContext('2d');
+var cropCanvas=byId('cropCanvas');
+var cropCtx=cropCanvas.getContext('2d');
+var canvasWrap=byId('canvasWrap');
 var work=document.createElement('canvas');
 var workCtx=work.getContext('2d');
 var originalImage=null;
 var sourceData=null;
 var outputData=null;
 var rotation=0;
+var flipH=false, flipV=false;
 var filmBase=[245,160,95];
 var low=[0,0,0],high=[1,1,1];
 var picking=false;
@@ -107,11 +131,18 @@ var renderTimer=null;
 var busy=false;
 var renderAgain=false;
 var pendingSave=false;
+var cropMode=false;
+var cropSelection=null;
+var cropRect=null;
+var cropStart=null;
+var displayImageW=0, displayImageH=0;
+var currentSourceWidth=0, currentSourceHeight=0;
 var controlIds=['exposure','contrast','gamma','temperature','tint','saturation'];
-var actionIds=['autoBtn','pickBtn','compareBtn','rotateBtn','resetBtn','saveBtn'];
+var actionIds=['autoBtn','pickBtn','compareBtn','flipHBtn','flipVBtn','rotateBtn','cropBtn','resetBtn','saveBtn'];
 
 function setStatus(text){byId('status').textContent=text;}
-function setEnabled(on){actionIds.forEach(function(id){byId(id).disabled=!on;});}
+function setEnabled(on){actionIds.forEach(function(id){byId(id).disabled=!on;}); if(!on) setCropButtons(false);}
+function setCropButtons(on){byId('applyCropBtn').disabled=!on; byId('cancelCropBtn').disabled=!cropMode;}
 function clamp(v,a,b){return v<a?a:(v>b?b:v);}
 function outputValues(){
  byId('exposureOut').textContent=Number(byId('exposure').value).toFixed(2);
@@ -134,22 +165,29 @@ function setEmpty(title,message){
  empty.querySelector('span').textContent=message;
  empty.classList.remove('hidden');
 }
+function initImageState(){
+ rotation=0; flipH=false; flipV=false;
+ cropRect={x:0,y:0,w:originalImage.naturalWidth||originalImage.width,h:originalImage.naturalHeight||originalImage.height};
+ cropSelection=null; cropStart=null;
+ hideCropMode();
+}
 function finishLoadedImage(img,objectURL){
  try{
-  originalImage=img;rotation=0;
+  originalImage=img;
+  initImageState();
   rebuildSource();
   if(!sourceData||!sourceData.width||!sourceData.height)throw new Error('No pixel data was produced');
   autoCorrect();
   resetSliders();
   byId('empty').classList.add('hidden');
-  canvas.classList.remove('hidden');
+  canvasWrap.classList.remove('hidden');
   setEnabled(true);showingOriginal=false;byId('compareBtn').textContent='Show original';
   renderNow();
   setStatus('Loaded');
  }catch(err){
   console.error(err);
   originalImage=null;sourceData=null;outputData=null;
-  canvas.classList.add('hidden');setEnabled(false);
+  canvasWrap.classList.add('hidden');setEnabled(false);
   setStatus('Image processing failed');
   setEmpty('Could not process this photo','Choose a screenshot or JPEG copy of the negative.');
  }finally{
@@ -170,32 +208,20 @@ function loadWithObjectURL(file){
  try{url=URL.createObjectURL(file);}catch(err){loadWithDataURL(file);return;}
  var img=new Image();
  var done=false;
- var timer=setTimeout(function(){
-  if(done)return;done=true;URL.revokeObjectURL(url);loadWithDataURL(file);
- },15000);
- img.onload=function(){
-  if(done)return;done=true;clearTimeout(timer);
-  requestAnimationFrame(function(){finishLoadedImage(img,url);});
- };
- img.onerror=function(){
-  if(done)return;done=true;clearTimeout(timer);URL.revokeObjectURL(url);loadWithDataURL(file);
- };
+ var timer=setTimeout(function(){ if(done)return; done=true; URL.revokeObjectURL(url); loadWithDataURL(file); },15000);
+ img.onload=function(){ if(done)return; done=true; clearTimeout(timer); requestAnimationFrame(function(){finishLoadedImage(img,url);}); };
+ img.onerror=function(){ if(done)return; done=true; clearTimeout(timer); URL.revokeObjectURL(url); loadWithDataURL(file); };
  img.src=url;
 }
 function loadWithDataURL(file){
  var reader=new FileReader();
- reader.onload=function(){
-  var img=new Image();
-  img.onload=function(){requestAnimationFrame(function(){finishLoadedImage(img,null);});};
-  img.onerror=function(){showDecodeError(file);};
-  img.src=reader.result;
- };
+ reader.onload=function(){ var img=new Image(); img.onload=function(){requestAnimationFrame(function(){finishLoadedImage(img,null);});}; img.onerror=function(){showDecodeError(file);}; img.src=reader.result; };
  reader.onerror=function(){showDecodeError(file);};
  reader.readAsDataURL(file);
 }
 function showDecodeError(file){
  originalImage=null;sourceData=null;outputData=null;
- canvas.classList.add('hidden');setEnabled(false);
+ canvasWrap.classList.add('hidden');setEnabled(false);
  if(isLikelyHEIC(file)){
   setStatus('HEIC not decoded');
   setEmpty('iPhone supplied an HEIC file','In Photos, open the image, take a screenshot, then select that screenshot. The screenshot will be a compatible PNG.');
@@ -207,7 +233,7 @@ function showDecodeError(file){
 function loadImageFile(file){
  if(!file)return;
  describeFile(file);
- setEnabled(false);canvas.classList.add('hidden');
+ setEnabled(false);canvasWrap.classList.add('hidden');
  setStatus('Reading photo');
  setEmpty('Loading photo','Converting the selected Photos item into a browser-readable image.');
  loadWithObjectURL(file);
@@ -215,20 +241,29 @@ function loadImageFile(file){
 function rebuildSource(){
  var iw=originalImage.naturalWidth||originalImage.width;
  var ih=originalImage.naturalHeight||originalImage.height;
+ if(!cropRect){cropRect={x:0,y:0,w:iw,h:ih};}
+ cropRect.x=clamp(cropRect.x,0,iw-1); cropRect.y=clamp(cropRect.y,0,ih-1);
+ cropRect.w=clamp(cropRect.w,1,iw-cropRect.x); cropRect.h=clamp(cropRect.h,1,ih-cropRect.y);
+ currentSourceWidth=cropRect.w; currentSourceHeight=cropRect.h;
  var max=previewLimit();
- var scale=Math.min(1,max/Math.max(iw,ih));
- var dw=Math.max(1,Math.round(iw*scale));
- var dh=Math.max(1,Math.round(ih*scale));
+ var scale=Math.min(1,max/Math.max(currentSourceWidth,currentSourceHeight));
+ var dw=Math.max(1,Math.round(currentSourceWidth*scale));
+ var dh=Math.max(1,Math.round(currentSourceHeight*scale));
+ displayImageW=dw; displayImageH=dh;
  var sideways=rotation===90||rotation===270;
- work.width=sideways?dh:dw;work.height=sideways?dw:dh;
- workCtx.setTransform(1,0,0,1,0,0);workCtx.clearRect(0,0,work.width,work.height);
- workCtx.translate(work.width/2,work.height/2);workCtx.rotate(rotation*Math.PI/180);
- workCtx.drawImage(originalImage,-dw/2,-dh/2,dw,dh);
+ work.width=sideways?dh:dw; work.height=sideways?dw:dh;
+ workCtx.setTransform(1,0,0,1,0,0); workCtx.clearRect(0,0,work.width,work.height);
+ workCtx.translate(work.width/2,work.height/2);
+ workCtx.rotate(rotation*Math.PI/180);
+ workCtx.scale(flipH?-1:1, flipV?-1:1);
+ workCtx.drawImage(originalImage,cropRect.x,cropRect.y,cropRect.w,cropRect.h,-dw/2,-dh/2,dw,dh);
  workCtx.setTransform(1,0,0,1,0,0);
  sourceData=workCtx.getImageData(0,0,work.width,work.height);
- canvas.width=work.width;canvas.height=work.height;
+ canvas.width=work.width; canvas.height=work.height;
+ cropCanvas.width=work.width; cropCanvas.height=work.height;
  outputData=ctx.createImageData(work.width,work.height);
  setStatus(work.width+' × '+work.height);
+ drawCropOverlay();
 }
 function sampleSquare(cx,cy,radius){
  var w=sourceData.width,h=sourceData.height,d=sourceData.data;
@@ -251,7 +286,7 @@ function positiveChannel(value,base,mode){
  if(mode==='bw')return 1-clamp(value/Math.max(1,base),0,1.15);
  return 1-clamp(value/Math.max(1,base),0,1.15);
 }
-function percentile(arr,p){arr.sort(function(a,b){return a-b;});return arr[Math.floor((arr.length-1)*p)]||0;}
+function percentile(arr,p){arr.sort(function(a,b){return a-b;}); return arr[Math.floor((arr.length-1)*p)]||0;}
 function calculateLevels(){
  var mode=byId('filmMode').value,d=sourceData.data,w=sourceData.width,h=sourceData.height;
  var c0=[],c1=[],c2=[];
@@ -260,29 +295,25 @@ function calculateLevels(){
  for(y=0;y<h;y+=step){for(x=0;x<w;x+=step){
   i=(y*w+x)*4;
   if(mode==='bw'){
-   gray=(d[i]+d[i+1]+d[i+2])/3;p0=positiveChannel(gray,bwBase,'bw');p1=p0;p2=p0;
+   gray=(d[i]+d[i+1]+d[i+2])/3; p0=positiveChannel(gray,bwBase,'bw'); p1=p0; p2=p0;
   }else{
-   p0=positiveChannel(d[i],filmBase[0],mode);p1=positiveChannel(d[i+1],filmBase[1],mode);p2=positiveChannel(d[i+2],filmBase[2],mode);
+   p0=positiveChannel(d[i],filmBase[0],mode); p1=positiveChannel(d[i+1],filmBase[1],mode); p2=positiveChannel(d[i+2],filmBase[2],mode);
   }
-  c0.push(p0);c1.push(p1);c2.push(p2);
+  c0.push(p0); c1.push(p1); c2.push(p2);
  }}
  low=[percentile(c0,.008),percentile(c1,.008),percentile(c2,.008)];
  high=[percentile(c0,.993),percentile(c1,.993),percentile(c2,.993)];
  for(i=0;i<3;i++){if(high[i]-low[i]<.08){low[i]=0;high[i]=1;}}
 }
-function autoCorrect(){detectFilmBase();calculateLevels();setStatus('Base RGB '+filmBase.map(function(v){return Math.round(v);}).join(', '));}
-function scheduleRender(){
- if(!sourceData)return;
- clearTimeout(renderTimer);
- renderTimer=setTimeout(renderNow,45);
-}
+function autoCorrect(){ detectFilmBase(); calculateLevels(); setStatus('Base RGB '+filmBase.map(function(v){return Math.round(v);}).join(', ')); }
+function scheduleRender(){ if(!sourceData)return; clearTimeout(renderTimer); renderTimer=setTimeout(renderNow,45); }
 function renderNow(){
  if(!sourceData)return;
  if(busy){renderAgain=true;return;}
- busy=true;setStatus('Processing');
+ busy=true; setStatus('Processing');
  setTimeout(function(){
   try{
-   if(showingOriginal){ctx.putImageData(sourceData,0,0);setStatus('Original negative');finishRender();return;}
+   if(showingOriginal){ ctx.putImageData(sourceData,0,0); setStatus('Original negative'); finishRender(); return; }
    var mode=byId('filmMode').value;
    var exposure=Math.pow(2,Number(byId('exposure').value));
    var contrast=Number(byId('contrast').value),gamma=Number(byId('gamma').value);
@@ -294,46 +325,38 @@ function renderNow(){
    var i,r,g,b,gray,lum;
    for(i=0;i<src.length;i+=4){
     if(mode==='bw'){
-     gray=(src[i]+src[i+1]+src[i+2])/3;r=g=b=1-clamp(gray/bwBase,0,1.15);
+     gray=(src[i]+src[i+1]+src[i+2])/3; r=g=b=1-clamp(gray/bwBase,0,1.15);
     }else if(mode==='simple'){
-     r=1-src[i]/255;g=1-src[i+1]/255;b=1-src[i+2]/255;
+     r=1-src[i]/255; g=1-src[i+1]/255; b=1-src[i+2]/255;
     }else{
-     r=1-clamp(src[i]/rb0,0,1.15);g=1-clamp(src[i+1]/rb1,0,1.15);b=1-clamp(src[i+2]/rb2,0,1.15);
+     r=1-clamp(src[i]/rb0,0,1.15); g=1-clamp(src[i+1]/rb1,0,1.15); b=1-clamp(src[i+2]/rb2,0,1.15);
     }
-    r=(r-low[0])/range0;g=(g-low[1])/range1;b=(b-low[2])/range2;
-    r*=1+temp*.12+tint*.035;g*=1-tint*.07;b*=1-temp*.12+tint*.035;
+    r=(r-low[0])/range0; g=(g-low[1])/range1; b=(b-low[2])/range2;
+    r*=1+temp*.12+tint*.035; g*=1-tint*.07; b*=1-temp*.12+tint*.035;
     r=Math.pow(Math.max(0,(r*exposure-.5)*contrast+.5),1/gamma);
     g=Math.pow(Math.max(0,(g*exposure-.5)*contrast+.5),1/gamma);
     b=Math.pow(Math.max(0,(b*exposure-.5)*contrast+.5),1/gamma);
     lum=r*.2126+g*.7152+b*.0722;
-    r=lum+(r-lum)*sat;g=lum+(g-lum)*sat;b=lum+(b-lum)*sat;
-    out[i]=Math.round(clamp(r,0,1)*255);out[i+1]=Math.round(clamp(g,0,1)*255);out[i+2]=Math.round(clamp(b,0,1)*255);out[i+3]=src[i+3];
+    r=lum+(r-lum)*sat; g=lum+(g-lum)*sat; b=lum+(b-lum)*sat;
+    out[i]=Math.round(clamp(r,0,1)*255); out[i+1]=Math.round(clamp(g,0,1)*255); out[i+2]=Math.round(clamp(b,0,1)*255); out[i+3]=src[i+3];
    }
-   ctx.putImageData(outputData,0,0);setStatus(canvas.width+' × '+canvas.height);
-  }catch(err){console.error(err);setStatus('Processing error');}
+   ctx.putImageData(outputData,0,0); setStatus(canvas.width+' × '+canvas.height);
+  }catch(err){ console.error(err); setStatus('Processing error'); }
   finishRender();
  },0);
 }
-function finishRender(){
- busy=false;
- if(pendingSave){pendingSave=false;writeSavedImage();return;}
- if(renderAgain){renderAgain=false;scheduleRender();}
-}
+function finishRender(){ busy=false; if(pendingSave){pendingSave=false; writeSavedImage(); return;} if(renderAgain){renderAgain=false; scheduleRender();} }
 function chooseFilmBase(event){
- if(!picking||!sourceData)return;
+ if(!picking||!sourceData||cropMode)return;
  var rect=canvas.getBoundingClientRect();
  var point=event.changedTouches&&event.changedTouches[0]?event.changedTouches[0]:event;
  var x=(point.clientX-rect.left)*canvas.width/rect.width;
  var y=(point.clientY-rect.top)*canvas.height/rect.height;
  filmBase=sampleSquare(x,y,Math.max(5,Math.round(Math.min(canvas.width,canvas.height)*.007)));
- calculateLevels();picking=false;byId('pickHint').classList.add('hidden');byId('pickBtn').textContent='Pick film base';
- setStatus('Base RGB '+filmBase.map(function(v){return Math.round(v);}).join(', '));scheduleRender();
+ calculateLevels(); picking=false; byId('pickHint').classList.add('hidden'); byId('pickBtn').textContent='Pick film base';
+ setStatus('Base RGB '+filmBase.map(function(v){return Math.round(v);}).join(', ')); scheduleRender();
 }
-function saveImage(){
- if(!sourceData)return;
- showingOriginal=false;byId('compareBtn').textContent='Show original';
- pendingSave=true;renderNow();
-}
+function saveImage(){ if(!sourceData)return; showingOriginal=false; byId('compareBtn').textContent='Show original'; pendingSave=true; renderNow(); }
 function writeSavedImage(){
  canvas.toBlob(function(blob){
   if(!blob){setStatus('Save failed');return;}
@@ -341,29 +364,100 @@ function writeSavedImage(){
   try{
    var file=new File([blob],'negative-positive.jpg',{type:'image/jpeg'});
    if(navigator.share&&navigator.canShare&&navigator.canShare({files:[file]})){
-    shared=true;navigator.share({files:[file],title:'Converted film negative'}).catch(function(){});
+    shared=true; navigator.share({files:[file],title:'Converted film negative'}).catch(function(){});
    }
   }catch(err){}
-  if(!shared){
-   var url=URL.createObjectURL(blob);var a=document.createElement('a');a.href=url;a.download='negative-positive.jpg';a.target='_blank';document.body.appendChild(a);a.click();a.remove();setTimeout(function(){URL.revokeObjectURL(url);},3000);
-  }
+  if(!shared){ var url=URL.createObjectURL(blob); var a=document.createElement('a'); a.href=url; a.download='negative-positive.jpg'; a.target='_blank'; document.body.appendChild(a); a.click(); a.remove(); setTimeout(function(){URL.revokeObjectURL(url);},3000); }
   setStatus('Image ready');
  },'image/jpeg',.94);
 }
+function getCanvasPoint(evt){
+ var rect=cropCanvas.getBoundingClientRect();
+ var p=evt.changedTouches&&evt.changedTouches[0]?evt.changedTouches[0]:evt;
+ return {x:clamp((p.clientX-rect.left)*cropCanvas.width/rect.width,0,cropCanvas.width), y:clamp((p.clientY-rect.top)*cropCanvas.height/rect.height,0,cropCanvas.height)};
+}
+function normalizedRect(a,b){
+ var x=Math.min(a.x,b.x), y=Math.min(a.y,b.y), w=Math.abs(a.x-b.x), h=Math.abs(a.y-b.y);
+ return {x:x,y:y,w:w,h:h};
+}
+function drawCropOverlay(){
+ cropCtx.clearRect(0,0,cropCanvas.width,cropCanvas.height);
+ if(!cropMode){return;}
+ cropCtx.fillStyle='rgba(0,0,0,0.45)';
+ cropCtx.fillRect(0,0,cropCanvas.width,cropCanvas.height);
+ if(cropSelection&&cropSelection.w>0&&cropSelection.h>0){
+  cropCtx.clearRect(cropSelection.x,cropSelection.y,cropSelection.w,cropSelection.h);
+  cropCtx.strokeStyle='rgba(240,195,108,1)'; cropCtx.lineWidth=Math.max(2,cropCanvas.width/300);
+  cropCtx.strokeRect(cropSelection.x,cropSelection.y,cropSelection.w,cropSelection.h);
+  cropCtx.setLineDash([8,6]);
+  cropCtx.strokeStyle='rgba(255,255,255,0.85)'; cropCtx.lineWidth=1;
+  var thirdsX=[cropSelection.x+cropSelection.w/3,cropSelection.x+cropSelection.w*2/3];
+  var thirdsY=[cropSelection.y+cropSelection.h/3,cropSelection.y+cropSelection.h*2/3];
+  thirdsX.forEach(function(x){cropCtx.beginPath();cropCtx.moveTo(x,cropSelection.y);cropCtx.lineTo(x,cropSelection.y+cropSelection.h);cropCtx.stroke();});
+  thirdsY.forEach(function(y){cropCtx.beginPath();cropCtx.moveTo(cropSelection.x,y);cropCtx.lineTo(cropSelection.x+cropSelection.w,y);cropCtx.stroke();});
+  cropCtx.setLineDash([]);
+ }
+}
+function hideCropMode(){
+ cropMode=false; cropStart=null; cropSelection=null;
+ cropCanvas.style.display='none'; byId('cropHint').classList.add('hidden'); byId('cropActions').classList.add('hidden');
+ byId('cropBtn').textContent='Crop'; setCropButtons(false); drawCropOverlay();
+}
+function enterCropMode(){
+ if(!sourceData)return;
+ picking=false; byId('pickHint').classList.add('hidden'); byId('pickBtn').textContent='Pick film base';
+ showingOriginal=false; byId('compareBtn').textContent='Show original'; renderNow();
+ cropMode=true; cropStart=null; cropSelection={x:cropCanvas.width*0.1,y:cropCanvas.height*0.1,w:cropCanvas.width*0.8,h:cropCanvas.height*0.8};
+ cropCanvas.style.display='block'; byId('cropHint').classList.remove('hidden'); byId('cropActions').classList.remove('hidden');
+ byId('cropBtn').textContent='Cropping'; setCropButtons(true); drawCropOverlay(); setStatus('Draw crop area');
+}
+function displayPointToSource(x,y){
+ var W=canvas.width, H=canvas.height, ux=x-W/2, uy=y-H/2, rx=ux, ry=uy;
+ if(rotation===90){rx=uy; ry=-ux;} else if(rotation===180){rx=-ux; ry=-uy;} else if(rotation===270){rx=-uy; ry=ux;}
+ if(flipH) rx=-rx; if(flipV) ry=-ry;
+ var nx=(rx + displayImageW/2)/displayImageW;
+ var ny=(ry + displayImageH/2)/displayImageH;
+ nx=clamp(nx,0,1); ny=clamp(ny,0,1);
+ return {x:cropRect.x + nx*cropRect.w, y:cropRect.y + ny*cropRect.h};
+}
+function applyCrop(){
+ if(!cropMode||!cropSelection||cropSelection.w<8||cropSelection.h<8)return;
+ var p1=displayPointToSource(cropSelection.x,cropSelection.y);
+ var p2=displayPointToSource(cropSelection.x+cropSelection.w,cropSelection.y+cropSelection.h);
+ var x=Math.min(p1.x,p2.x), y=Math.min(p1.y,p2.y), w=Math.abs(p1.x-p2.x), h=Math.abs(p1.y-p2.y);
+ if(w<2||h<2){setStatus('Crop too small'); return;}
+ cropRect={x:Math.round(x), y:Math.round(y), w:Math.max(1,Math.round(w)), h:Math.max(1,Math.round(h))};
+ hideCropMode(); rebuildSource(); autoCorrect(); scheduleRender(); setStatus('Cropped');
+}
+function resetAll(){
+ if(!originalImage||!sourceData)return;
+ initImageState(); rebuildSource(); autoCorrect(); resetSliders(); showingOriginal=false; byId('compareBtn').textContent='Show original'; scheduleRender();
+}
+function startCrop(evt){ if(!cropMode)return; evt.preventDefault(); cropStart=getCanvasPoint(evt); cropSelection={x:cropStart.x,y:cropStart.y,w:0,h:0}; setCropButtons(false); drawCropOverlay(); }
+function moveCrop(evt){ if(!cropMode||!cropStart)return; evt.preventDefault(); cropSelection=normalizedRect(cropStart,getCanvasPoint(evt)); setCropButtons(cropSelection.w>8&&cropSelection.h>8); drawCropOverlay(); }
+function endCrop(evt){ if(!cropMode||!cropStart)return; evt.preventDefault(); cropSelection=normalizedRect(cropStart,getCanvasPoint(evt)); cropStart=null; setCropButtons(cropSelection.w>8&&cropSelection.h>8); drawCropOverlay(); }
 
 fileInput.addEventListener('click',function(){this.value='';});
-fileInput.addEventListener('change',function(e){var file=e.target.files&&e.target.files[0];if(file)loadImageFile(file);else setStatus('No photo selected');});
-controlIds.forEach(function(id){var el=byId(id);el.addEventListener('input',function(){outputValues();scheduleRender();});el.addEventListener('change',function(){outputValues();scheduleRender();});});
-byId('filmMode').addEventListener('change',function(){if(!sourceData)return;calculateLevels();scheduleRender();});
-byId('qualityMode').addEventListener('change',function(){if(!originalImage)return;rebuildSource();autoCorrect();scheduleRender();});
-byId('autoBtn').addEventListener('click',function(){if(!sourceData)return;autoCorrect();resetSliders();scheduleRender();});
-byId('pickBtn').addEventListener('click',function(){if(!sourceData)return;picking=!picking;byId('pickHint').classList.toggle('hidden',!picking);byId('pickBtn').textContent=picking?'Cancel picking':'Pick film base';});
-byId('compareBtn').addEventListener('click',function(){if(!sourceData)return;showingOriginal=!showingOriginal;byId('compareBtn').textContent=showingOriginal?'Show positive':'Show original';renderNow();});
-byId('rotateBtn').addEventListener('click',function(){if(!originalImage)return;rotation=(rotation+90)%360;rebuildSource();autoCorrect();scheduleRender();});
-byId('resetBtn').addEventListener('click',function(){if(!sourceData)return;autoCorrect();resetSliders();showingOriginal=false;byId('compareBtn').textContent='Show original';scheduleRender();});
+fileInput.addEventListener('change',function(e){var file=e.target.files&&e.target.files[0]; if(file)loadImageFile(file); else setStatus('No photo selected');});
+controlIds.forEach(function(id){var el=byId(id); el.addEventListener('input',function(){outputValues();scheduleRender();}); el.addEventListener('change',function(){outputValues();scheduleRender();});});
+byId('filmMode').addEventListener('change',function(){if(!sourceData)return; calculateLevels(); scheduleRender();});
+byId('qualityMode').addEventListener('change',function(){if(!originalImage)return; rebuildSource(); autoCorrect(); scheduleRender();});
+byId('autoBtn').addEventListener('click',function(){if(!sourceData)return; autoCorrect(); resetSliders(); scheduleRender();});
+byId('pickBtn').addEventListener('click',function(){ if(!sourceData||cropMode)return; picking=!picking; byId('pickHint').classList.toggle('hidden',!picking); byId('pickBtn').textContent=picking?'Cancel picking':'Pick film base'; });
+byId('compareBtn').addEventListener('click',function(){ if(!sourceData||cropMode)return; showingOriginal=!showingOriginal; byId('compareBtn').textContent=showingOriginal?'Show positive':'Show original'; renderNow(); });
+byId('flipHBtn').addEventListener('click',function(){ if(!originalImage)return; flipH=!flipH; rebuildSource(); autoCorrect(); scheduleRender(); });
+byId('flipVBtn').addEventListener('click',function(){ if(!originalImage)return; flipV=!flipV; rebuildSource(); autoCorrect(); scheduleRender(); });
+byId('rotateBtn').addEventListener('click',function(){ if(!originalImage)return; rotation=(rotation+90)%360; rebuildSource(); autoCorrect(); scheduleRender(); });
+byId('cropBtn').addEventListener('click',function(){ if(!sourceData)return; if(cropMode){hideCropMode(); setStatus(canvas.width+' × '+canvas.height);} else {enterCropMode();} });
+byId('applyCropBtn').addEventListener('click',applyCrop);
+byId('cancelCropBtn').addEventListener('click',function(){hideCropMode(); setStatus(canvas.width+' × '+canvas.height);});
+byId('resetBtn').addEventListener('click',resetAll);
 byId('saveBtn').addEventListener('click',saveImage);
 canvas.addEventListener('click',chooseFilmBase);
-canvas.addEventListener('touchend',function(e){if(picking){e.preventDefault();chooseFilmBase(e);}},{passive:false});
+canvas.addEventListener('touchend',function(e){if(picking&&!cropMode){e.preventDefault(); chooseFilmBase(e);}},{passive:false});
+['mousedown','touchstart'].forEach(function(type){cropCanvas.addEventListener(type,startCrop,{passive:false});});
+['mousemove','touchmove'].forEach(function(type){cropCanvas.addEventListener(type,moveCrop,{passive:false});});
+['mouseup','mouseleave','touchend','touchcancel'].forEach(function(type){cropCanvas.addEventListener(type,endCrop,{passive:false});});
 outputValues();
 })();
 </script>
